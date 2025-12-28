@@ -44,6 +44,49 @@ function New-Finding {
     }
 }
 
+# Function to parse Windows Event Log message into structured hashtable
+function ConvertTo-StructuredLog {
+    param([string]$LogText)
+    
+    $result = @{}
+    
+    if ([string]::IsNullOrEmpty($LogText)) {
+        return $result
+    }
+    
+    # Split by newlines and process each line
+    $lines = $LogText -split "`r?`n"
+    $currentKey = $null
+    $currentValue = $null
+    
+    foreach ($line in $lines) {
+        # Skip empty lines
+        if ([string]::IsNullOrWhiteSpace($line)) { continue }
+        
+        # Check if line contains a key: value pattern
+        if ($line -match "^\s*([^:]+):\s*(.*)$") {
+            # Save previous key-value if exists
+            if ($currentKey) {
+                $result[$currentKey] = $currentValue.Trim()
+            }
+            
+            $currentKey = $matches[1].Trim() -replace '\s+', '_' -replace '[^\w]', ''
+            $currentValue = $matches[2]
+        }
+        elseif ($currentKey) {
+            # Continuation of previous value
+            $currentValue += " " + $line.Trim()
+        }
+    }
+    
+    # Save last key-value
+    if ($currentKey) {
+        $result[$currentKey] = $currentValue.Trim()
+    }
+    
+    return $result
+}
+
 # Statistics
 $stats = @{
     MimikatzExecutions = 0
@@ -3029,7 +3072,7 @@ if ($findings.Count -gt 0) {
         Write-Host "[-] Failed to save HTML report: $_" -ForegroundColor Red
     }
     
-    # Export findings to CSV as well (with RawLog as JSON)
+    # Export findings to CSV as well (with RawLog as structured JSON)
     $csvPath = $OutputPath -replace '\.html$', '.csv'
     try {
         $findings | Select-Object @{Name='Timestamp';Expression={$_.Timestamp.ToString("yyyy-MM-dd HH:mm:ss")}}, 
@@ -3039,9 +3082,10 @@ if ($findings.Count -gt 0) {
             EventID, 
             Source, 
             Details,
-            @{Name='RawLog';Expression={ 
-                # Convert to proper JSON using ConvertTo-Json
-                @{ EventLog = $_.RawLog } | ConvertTo-Json -Compress
+            @{Name='EventData';Expression={ 
+                # Parse the raw log into structured fields and convert to JSON
+                $structured = ConvertTo-StructuredLog -LogText $_.RawLog
+                $structured | ConvertTo-Json -Compress -Depth 3
             }} | Export-Csv -Path $csvPath -NoTypeInformation -Force -Encoding UTF8
         Write-Host "[+] CSV Report saved to: $csvPath" -ForegroundColor Green
     } catch {
