@@ -104,7 +104,7 @@ $stats = @{
 Write-Host "`n[PHASE 1: MIMIKATZ DETECTION]" -ForegroundColor Yellow
 Write-Host "============================================" -ForegroundColor Gray
 
-Write-Host "`n[1/32] Detecting Mimikatz process execution..." -ForegroundColor Yellow
+Write-Host "`n[1/35] Detecting Mimikatz process execution..." -ForegroundColor Yellow
 
 # Sysmon Event 1 - Mimikatz Process Creation (handles renamed executables)
 try {
@@ -186,7 +186,7 @@ try {
     Write-Host "  [-] Error checking Sysmon: $($_.Exception.Message)" -ForegroundColor Gray
 }
 
-Write-Host "`n[2/32] Detecting LSASS memory access (Credential Dumping)..." -ForegroundColor Yellow
+Write-Host "`n[2/35] Detecting LSASS memory access (Credential Dumping)..." -ForegroundColor Yellow
 
 # Sysmon Event 10 - LSASS Access
 try {
@@ -229,7 +229,7 @@ try {
     Write-Host "  [-] Error checking LSASS access: $($_.Exception.Message)" -ForegroundColor Gray
 }
 
-Write-Host "`n[3/32] Detecting SAM database access..." -ForegroundColor Yellow
+Write-Host "`n[3/35] Detecting SAM database access..." -ForegroundColor Yellow
 
 # SAM Registry Access - Sysmon Event 12, 13 (limited for performance)
 try {
@@ -268,7 +268,7 @@ try {
     Write-Host "  [-] No SAM access events" -ForegroundColor Gray
 }
 
-Write-Host "`n[4/32] Detecting SAM/SYSTEM file copying..." -ForegroundColor Yellow
+Write-Host "`n[4/35] Detecting SAM/SYSTEM file copying..." -ForegroundColor Yellow
 
 # File Access - Sysmon Event 11
 try {
@@ -299,7 +299,7 @@ try {
     Write-Host "  [-] No SAM file access events" -ForegroundColor Gray
 }
 
-Write-Host "`n[5/32] Detecting credential dumping via PowerShell..." -ForegroundColor Yellow
+Write-Host "`n[5/35] Detecting credential dumping via PowerShell..." -ForegroundColor Yellow
 
 # PowerShell Mimikatz/Credential Dumping patterns
 $psMimikatzPatterns = @(
@@ -358,7 +358,7 @@ try {
 Write-Host "`n[PHASE 2: PASS-THE-HASH DETECTION]" -ForegroundColor Yellow
 Write-Host "============================================" -ForegroundColor Gray
 
-Write-Host "`n[6/32] Detecting Pass-the-Hash (Logon Type 9)..." -ForegroundColor Yellow
+Write-Host "`n[6/35] Detecting Pass-the-Hash (Logon Type 9)..." -ForegroundColor Yellow
 
 # Event 4624 - Logon Type 9
 try {
@@ -389,10 +389,13 @@ try {
     Write-Host "  [-] No Logon Type 9 events" -ForegroundColor Gray
 }
 
-Write-Host "`n[7/32] Detecting explicit credential usage..." -ForegroundColor Yellow
+Write-Host "`n[7/35] Detecting explicit credential usage..." -ForegroundColor Yellow
 
 # Event 4648
 try {
+    # Get local machine account name (hostname + $)
+    $localMachineAccount = "$env:COMPUTERNAME$"
+    
     $explicitCreds = Get-WinEvent -FilterHashtable @{
         LogName = 'Security'
         ID = 4648
@@ -407,6 +410,11 @@ try {
         # Exclude legitimate processes and accounts
         $isLegitProcess = $process -match "\\consent\.exe$|\\svchost\.exe$|\\lsass\.exe$|\\services\.exe$"
         $isLegitAccount = $account -match "^DWM-\d+$|^UMFD-\d+$|^SYSTEM$|^LOCAL SERVICE$|^NETWORK SERVICE$"
+        
+        # Exclude local machine account
+        if ($account -eq $localMachineAccount) {
+            continue
+        }
         
         if ($isLegitProcess -or $isLegitAccount) {
             continue
@@ -426,7 +434,7 @@ try {
     Write-Host "  [-] No explicit credential events" -ForegroundColor Gray
 }
 
-Write-Host "`n[8/32] Detecting SeDebugPrivilege usage..." -ForegroundColor Yellow
+Write-Host "`n[8/35] Detecting SeDebugPrivilege usage..." -ForegroundColor Yellow
 
 # Event 4672 - Special privileges assigned
 try {
@@ -440,11 +448,23 @@ try {
     
     foreach ($event in $specialPrivs) {
         $msg = $event.Message
-        $account = if ($msg -match "Account Name:\s*(\S+)") { $matches[1] } else { "Unknown" }
-        $domain = if ($msg -match "Account Domain:\s*(\S+)") { $matches[1] } else { "Unknown" }
+        $account = if ($msg -match "Account Name:\s*(.+?)[\r\n]") { $matches[1].Trim() } else { "Unknown" }
+        $domain = if ($msg -match "Account Domain:\s*(.+?)[\r\n]") { $matches[1].Trim() } else { "Unknown" }
+        $securityId = if ($msg -match "Security ID:\s*(\S+)") { $matches[1].Trim() } else { "Unknown" }
         
         # Skip machine/service accounts (containing $) and Window Manager accounts (DWM-*, UMFD-*)
-        if ($account -match "\$" -or $account -match "^(DWM-|UMFD-)") {
+        if ($account.Contains('$') -or $account -match "^(DWM-|UMFD-)") {
+            continue
+        }
+        
+        # Skip NT AUTHORITY\SYSTEM
+        if ($account -eq "SYSTEM" -and $domain -eq "NT AUTHORITY") {
+            continue
+        }
+        
+        # Skip built-in accounts by Security ID
+        # -500 = Built-in Administrator, S-1-5-18 = SYSTEM, S-1-5-19 = LOCAL SERVICE, S-1-5-20 = NETWORK SERVICE
+        if ($securityId -match "-500$" -or $securityId -in @("S-1-5-18", "S-1-5-19", "S-1-5-20")) {
             continue
         }
         
@@ -463,7 +483,7 @@ try {
 Write-Host "`n[PHASE 3: WINRM LATERAL MOVEMENT]" -ForegroundColor Yellow
 Write-Host "============================================" -ForegroundColor Gray
 
-Write-Host "`n[9/32] Detecting WinRM service activity..." -ForegroundColor Yellow
+Write-Host "`n[9/35] Detecting WinRM service activity..." -ForegroundColor Yellow
 
 try {
     $winrmSessions = Get-WinEvent -FilterHashtable @{
@@ -494,40 +514,9 @@ try {
     Write-Host "  [-] WinRM Operational log not available" -ForegroundColor Gray
 }
 
-Write-Host "`n[10/32] Detecting remote logons..." -ForegroundColor Yellow
+# Detection [10/35] - Remote logons removed due to excessive noise
 
-try {
-    $remoteLogons = Get-WinEvent -FilterHashtable @{
-        LogName = 'Security'
-        ID = 4624
-        StartTime = $startTime
-    } -ErrorAction Stop | Where-Object {
-        $_.Properties[8].Value -eq 3 -and
-        $_.Properties[18].Value -notmatch "^(127\.|::1|fe80::|-)"
-    }
-    
-    $stats.RemoteLogons = $remoteLogons.Count
-    
-    foreach ($event in $remoteLogons) {
-        $user = $event.Properties[5].Value
-        $sourceIP = $event.Properties[18].Value
-        $logonProcess = $event.Properties[9].Value
-        
-        $severity = if ($logonProcess -match "NTLM") { "HIGH" } else { "MEDIUM" }
-        
-        $findings += New-Finding -Category "Remote Logon" -Severity $severity `
-            -Time (Get-EventTimeUTC $event) -Description "Network logon from $sourceIP" `
-            -EventID "4624" -Source "Security" `
-            -Details "User: $user | Process: $logonProcess" `
-            -RawLog $event.Message
-        
-        Write-Host "  [!] $severity : Remote logon - $user from $sourceIP at $((Get-EventTimeUTC $event))" -ForegroundColor Yellow
-    }
-} catch {
-    Write-Host "  [-] No remote logon events" -ForegroundColor Gray
-}
-
-Write-Host "`n[11/32] Detecting wsmprovhost.exe processes..." -ForegroundColor Yellow
+Write-Host "`n[11/35] Detecting wsmprovhost.exe processes..." -ForegroundColor Yellow
 
 try {
     $wsmprovProcs = Get-WinEvent -FilterHashtable @{
@@ -555,7 +544,7 @@ try {
     Write-Host "  [-] No wsmprovhost processes" -ForegroundColor Gray
 }
 
-Write-Host "`n[12/32] Detecting WinRM network connections..." -ForegroundColor Yellow
+Write-Host "`n[12/35] Detecting WinRM network connections..." -ForegroundColor Yellow
 
 try {
     $winrmNetwork = Get-WinEvent -FilterHashtable @{
@@ -584,7 +573,7 @@ try {
     Write-Host "  [-] No WinRM network connections" -ForegroundColor Gray
 }
 
-Write-Host "`n[13/32] Detecting remote PowerShell commands..." -ForegroundColor Yellow
+Write-Host "`n[13/35] Detecting remote PowerShell commands..." -ForegroundColor Yellow
 
 try {
     $psRemoting = Get-WinEvent -FilterHashtable @{
@@ -623,7 +612,7 @@ try {
     Write-Host "  [-] No remote PowerShell commands" -ForegroundColor Gray
 }
 
-Write-Host "`n[14/32] Detecting file transfers via PSSession..." -ForegroundColor Yellow
+Write-Host "`n[14/35] Detecting file transfers via PSSession..." -ForegroundColor Yellow
 
 try {
     $fileTransfers = Get-WinEvent -FilterHashtable @{
@@ -652,7 +641,7 @@ try {
     Write-Host "  [-] No file transfer activity" -ForegroundColor Gray
 }
 
-Write-Host "`n[15/32] Detecting remote process access..." -ForegroundColor Yellow
+Write-Host "`n[15/35] Detecting remote process access..." -ForegroundColor Yellow
 
 try {
     $remoteProcAccess = Get-WinEvent -FilterHashtable @{
@@ -685,7 +674,7 @@ try {
 # NEW DETECTION CATEGORIES
 # ============================================
 
-Write-Host "`n[16/32] Detecting DPAPI activity (Master Key access)..." -ForegroundColor Yellow
+Write-Host "`n[16/35] Detecting DPAPI activity (Master Key access)..." -ForegroundColor Yellow
 
 try {
     # Event 4692 - DPAPI Master Key Backup
@@ -732,7 +721,7 @@ try {
     Write-Host "  [-] No DPAPI events" -ForegroundColor Gray
 }
 
-Write-Host "`n[17/32] Detecting Kerberos ticket attacks (Golden/Silver ticket)..." -ForegroundColor Yellow
+Write-Host "`n[17/35] Detecting Kerberos ticket attacks (Golden/Silver ticket)..." -ForegroundColor Yellow
 
 try {
     # Event 4768 - Kerberos TGT Request (looking for anomalies)
@@ -790,7 +779,7 @@ try {
     Write-Host "  [-] No suspicious Kerberos events" -ForegroundColor Gray
 }
 
-Write-Host "`n[18/32] Detecting NTLM authentication (Pass-the-Hash indicators)..." -ForegroundColor Yellow
+Write-Host "`n[18/35] Detecting NTLM authentication (Pass-the-Hash indicators)..." -ForegroundColor Yellow
 
 try {
     # Event 4776 - NTLM credential validation
@@ -830,7 +819,7 @@ try {
     Write-Host "  [-] No suspicious NTLM events" -ForegroundColor Gray
 }
 
-Write-Host "`n[19/32] Detecting DCSync attacks (Directory Replication)..." -ForegroundColor Yellow
+Write-Host "`n[19/35] Detecting DCSync attacks (Directory Replication)..." -ForegroundColor Yellow
 
 try {
     $dcsyncFound = $false
@@ -908,7 +897,7 @@ try {
         }
         
         # Also skip any machine account ending with $ that contains DC naming patterns
-        if ($subjectUser -match "\$$" -and $subjectUser -match "DC\d*\$|PDC|BDC|PSYCHDC") {
+        if ($subjectUser.EndsWith('$') -and $subjectUser -match "DC\d*|PDC|BDC|PSYCHDC") {
             continue
         }
         
@@ -929,7 +918,7 @@ try {
     Write-Host "  [-] Error checking DCSync: $($_.Exception.Message)" -ForegroundColor Gray
 }
 
-Write-Host "`n[20/32] Detecting Process Injection (CreateRemoteThread)..." -ForegroundColor Yellow
+Write-Host "`n[20/35] Detecting Process Injection (CreateRemoteThread)..." -ForegroundColor Yellow
 
 try {
     # Sysmon Event 8 - CreateRemoteThread
@@ -968,7 +957,7 @@ try {
     Write-Host "  [-] No CreateRemoteThread events" -ForegroundColor Gray
 }
 
-Write-Host "`n[21/32] Detecting Process Tampering..." -ForegroundColor Yellow
+Write-Host "`n[21/35] Detecting Process Tampering..." -ForegroundColor Yellow
 
 try {
     # Sysmon Event 25 - Process Tampering
@@ -997,9 +986,11 @@ try {
     Write-Host "  [-] No process tampering events" -ForegroundColor Gray
 }
 
-Write-Host "`n[22/32] Detecting Security Log Cleared..." -ForegroundColor Yellow
+Write-Host "`n[22/35] Detecting Security Log Cleared..." -ForegroundColor Yellow
 
 try {
+    $logClearFound = $false
+    
     # Event 1102 - Security log cleared
     $logClearedEvents = Get-WinEvent -FilterHashtable @{
         LogName = 'Security'
@@ -1008,17 +999,14 @@ try {
     } -ErrorAction SilentlyContinue
     
     foreach ($event in $logClearedEvents) {
-        $msg = $event.Message
-        $subjectUser = if ($msg -match "Subject:.*?Account Name:\s*(\S+)") { $matches[1] } else { "Unknown" }
-        $subjectDomain = if ($msg -match "Subject:.*?Account Domain:\s*(\S+)") { $matches[1] } else { "Unknown" }
-        
         $findings += New-Finding -Category "Log Cleared" -Severity "CRITICAL" `
             -Time (Get-EventTimeUTC $event) -Description "Security event log was cleared" `
             -EventID "1102" -Source "Security" `
-            -Details "Cleared by: $subjectDomain\$subjectUser" `
+            -Details "Security log cleared" `
             -RawLog $event.Message
         
-        Write-Host "  [!] CRITICAL: Security log cleared by $subjectDomain\$subjectUser at $((Get-EventTimeUTC $event))" -ForegroundColor Red
+        Write-Host "  [!] CRITICAL: Security log cleared at $((Get-EventTimeUTC $event))" -ForegroundColor Red
+        $logClearFound = $true
     }
     
     # Also check System log for event log service events
@@ -1041,16 +1029,46 @@ try {
             -RawLog $event.Message
         
         Write-Host "  [!] CRITICAL: $logName log cleared at $((Get-EventTimeUTC $event))" -ForegroundColor Red
+        $logClearFound = $true
+    }
+    
+    # Check for wevtutil clear log commands in Sysmon
+    $wevtutilEvents = Get-WinEvent -FilterHashtable @{
+        LogName = 'Microsoft-Windows-Sysmon/Operational'
+        ID = 1
+        StartTime = $startTime
+    } -MaxEvents 1000 -ErrorAction SilentlyContinue | Where-Object {
+        $_.Message -match "wevtutil.*cl\s|wevtutil.*clear-log|Clear-EventLog|Remove-EventLog"
+    }
+    
+    foreach ($event in $wevtutilEvents) {
+        $msg = $event.Message
+        $user = if ($msg -match "User:\s*(.+?)[\r\n]") { $matches[1].Trim() } else { "Unknown" }
+        $cmdLine = if ($msg -match "CommandLine:\s*(.+?)[\r\n]") { $matches[1].Trim() } else { "Unknown" }
+        $image = if ($msg -match "Image:\s*(.+?)[\r\n]") { $matches[1].Trim() } else { "Unknown" }
+        
+        $findings += New-Finding -Category "Log Cleared" -Severity "CRITICAL" `
+            -Time (Get-EventTimeUTC $event) -Description "Event log clear command detected" `
+            -EventID "1" -Source "Sysmon" `
+            -Details "User: $user | Command: $cmdLine" `
+            -RawLog $event.Message
+        
+        Write-Host "  [!] CRITICAL: Log clear command by $user : $cmdLine" -ForegroundColor Red
+        $logClearFound = $true
+    }
+    
+    if (-not $logClearFound) {
+        Write-Host "  [-] No log clearing events" -ForegroundColor Gray
     }
 } catch {
-    Write-Host "  [-] No log clearing events" -ForegroundColor Gray
+    Write-Host "  [-] Error checking log clearing: $($_.Exception.Message)" -ForegroundColor Gray
 }
 
 # ============================================
 # RUBEUS & ADVANCED KERBEROS ATTACK DETECTIONS
 # ============================================
 
-Write-Host "`n[23/32] Detecting Rubeus Execution..." -ForegroundColor Yellow
+Write-Host "`n[23/35] Detecting Rubeus Execution..." -ForegroundColor Yellow
 
 try {
     $rubeusFound = $false
@@ -1145,7 +1163,7 @@ try {
     Write-Host "  [-] Error checking Rubeus: $($_.Exception.Message)" -ForegroundColor Gray
 }
 
-Write-Host "`n[24/32] Detecting Kerberoasting (TGS-REQ with RC4)..." -ForegroundColor Yellow
+Write-Host "`n[24/35] Detecting Kerberoasting (TGS-REQ with RC4)..." -ForegroundColor Yellow
 
 try {
     $kerberoastEvents = Get-WinEvent -FilterHashtable @{
@@ -1179,7 +1197,7 @@ try {
     Write-Host "  [-] No Kerberoasting events" -ForegroundColor Gray
 }
 
-Write-Host "`n[25/32] Detecting AS-REP Roasting..." -ForegroundColor Yellow
+Write-Host "`n[25/35] Detecting AS-REP Roasting..." -ForegroundColor Yellow
 
 try {
     $asrepEvents = Get-WinEvent -FilterHashtable @{
@@ -1208,7 +1226,7 @@ try {
     Write-Host "  [-] No AS-REP Roasting events" -ForegroundColor Gray
 }
 
-Write-Host "`n[26/32] Detecting Golden Ticket indicators..." -ForegroundColor Yellow
+Write-Host "`n[26/35] Detecting Golden Ticket indicators..." -ForegroundColor Yellow
 
 try {
     $goldenFound = $false
@@ -1269,7 +1287,7 @@ try {
     Write-Host "  [-] Error checking Golden Ticket: $($_.Exception.Message)" -ForegroundColor Gray
 }
 
-Write-Host "`n[27/32] Detecting Skeleton Key Attack..." -ForegroundColor Yellow
+Write-Host "`n[27/35] Detecting Skeleton Key Attack..." -ForegroundColor Yellow
 
 try {
     $skeletonEvents = Get-WinEvent -FilterHashtable @{
@@ -1316,7 +1334,7 @@ try {
     Write-Host "  [-] No Skeleton Key events" -ForegroundColor Gray
 }
 
-Write-Host "`n[28/32] Detecting S4U Delegation Abuse..." -ForegroundColor Yellow
+Write-Host "`n[28/35] Detecting S4U Delegation Abuse..." -ForegroundColor Yellow
 
 try {
     $s4uEvents = Get-WinEvent -FilterHashtable @{
@@ -1344,7 +1362,7 @@ try {
     Write-Host "  [-] No S4U delegation events" -ForegroundColor Gray
 }
 
-Write-Host "`n[29/32] Detecting Mimikatz Credential Commands in Logs..." -ForegroundColor Yellow
+Write-Host "`n[29/35] Detecting Mimikatz Credential Commands in Logs..." -ForegroundColor Yellow
 
 try {
     $mimikatzCmdsFound = $false
@@ -1417,7 +1435,7 @@ try {
     Write-Host "  [-] Error checking Mimikatz commands: $($_.Exception.Message)" -ForegroundColor Gray
 }
 
-Write-Host "`n[30/32] Detecting Overpass-the-Hash (Type 9 Logon)..." -ForegroundColor Yellow
+Write-Host "`n[30/35] Detecting Overpass-the-Hash (Type 9 Logon)..." -ForegroundColor Yellow
 
 try {
     $opthEvents = Get-WinEvent -FilterHashtable @{
@@ -1447,7 +1465,7 @@ try {
     Write-Host "  [-] No Overpass-the-Hash events" -ForegroundColor Gray
 }
 
-Write-Host "`n[31/32] Detecting Password Spraying..." -ForegroundColor Yellow
+Write-Host "`n[31/35] Detecting Password Spraying..." -ForegroundColor Yellow
 
 try {
     $sprayEvents = Get-WinEvent -FilterHashtable @{
@@ -1484,18 +1502,19 @@ try {
     Write-Host "  [-] No Password Spraying events" -ForegroundColor Gray
 }
 
-Write-Host "`n[32/32] Detecting Pass-the-Ticket patterns..." -ForegroundColor Yellow
+Write-Host "`n[32/35] Detecting Pass-the-Ticket patterns..." -ForegroundColor Yellow
 
 try {
     $pttFound = $false
     
-    # Method 1: Sysmon - kerberos::ptt command
+    # Method 1: Sysmon - kerberos::ptt command (Mimikatz/Rubeus)
+    Write-Host "  [*] Checking for PTT commands in Sysmon..." -ForegroundColor Gray
     $pttCmdEvents = Get-WinEvent -FilterHashtable @{
         LogName = 'Microsoft-Windows-Sysmon/Operational'
         ID = 1
         StartTime = $startTime
     } -MaxEvents 1000 -ErrorAction SilentlyContinue | Where-Object {
-        $_.Message -match "kerberos::ptt|ptt\s|/ticket:"
+        $_.Message -match "kerberos::ptt|/ptt|/ticket:"
     }
     
     foreach ($event in $pttCmdEvents) {
@@ -1513,36 +1532,92 @@ try {
         $pttFound = $true
     }
     
-    # Method 2: Network logons with Kerberos from multiple IPs
-    $pttEvents = Get-WinEvent -FilterHashtable @{
-        LogName = 'Security'
-        ID = 4624
-        StartTime = $startTime
-    } -MaxEvents 500 -ErrorAction SilentlyContinue | Where-Object {
-        $_.Message -match "Logon Type:\s*3" -and $_.Message -match "Authentication Package:\s*Kerberos"
-    }
+    # Method 2: TGS requests (4769) without corresponding TGT (4768) from same host
+    # This indicates a ticket was obtained elsewhere and passed to this machine
+    Write-Host "  [*] Analyzing Kerberos ticket requests (4768/4769)..." -ForegroundColor Gray
     
-    if ($pttEvents) {
-        $pttGrouped = $pttEvents | Group-Object {
-            if ($_.Message -match "Account Name:\s*(\S+)") { $matches[1] } else { "Unknown" }
-        } | Where-Object { 
-            $ips = $_.Group | ForEach-Object {
-                if ($_.Message -match "Source Network Address:\s*(\d+\.\d+\.\d+\.\d+)") { $matches[1] }
-            } | Select-Object -Unique
-            $ips.Count -gt 1
+    # Build a map of user -> client addresses that requested TGT
+    $userTgtHosts = @{}
+    $tgtEvents = Get-WinEvent -FilterHashtable @{
+        LogName = 'Security'
+        ID = 4768
+        StartTime = $startTime
+    } -MaxEvents 1000 -ErrorAction SilentlyContinue
+    
+    foreach ($event in $tgtEvents) {
+        $msg = $event.Message
+        $accountName = if ($msg -match "Account Name:\s*(\S+)") { $matches[1].Trim() } else { "" }
+        $clientAddress = if ($msg -match "Client Address:\s*(?:::ffff:)?(\S+)") { $matches[1].Trim() } else { "" }
+        
+        # Skip machine accounts and empty values
+        if ($accountName.EndsWith('$') -or -not $accountName -or $clientAddress -eq "-" -or -not $clientAddress) {
+            continue
         }
         
-        foreach ($group in $pttGrouped) {
-            $sampleEvent = $group.Group[0]
-            $userName = $group.Name
-            
+        if (-not $userTgtHosts.ContainsKey($accountName)) {
+            $userTgtHosts[$accountName] = @()
+        }
+        if ($clientAddress -notin $userTgtHosts[$accountName]) {
+            $userTgtHosts[$accountName] += $clientAddress
+        }
+    }
+    
+    # Check TGS requests (4769) for users requesting service tickets from hosts where they never got a TGT
+    $tgsEvents = Get-WinEvent -FilterHashtable @{
+        LogName = 'Security'
+        ID = 4769
+        StartTime = $startTime
+    } -MaxEvents 1000 -ErrorAction SilentlyContinue
+    
+    foreach ($event in $tgsEvents) {
+        $msg = $event.Message
+        
+        # 4769 has multiple Account Name fields - we need the one under "Account Information"
+        # The first Account Name in the message is the requesting account
+        $accountName = if ($msg -match "Account Name:\s*(\S+)") { $matches[1].Trim() } else { "" }
+        $clientAddress = if ($msg -match "Client Address:\s*(?:::ffff:)?(\S+)") { $matches[1].Trim() } else { "" }
+        $serviceName = if ($msg -match "Service Name:\s*(\S+)") { $matches[1].Trim() } else { "" }
+        
+        # Skip machine accounts and empty values
+        if (-not $accountName -or $clientAddress -eq "-" -or -not $clientAddress) {
+            continue
+        }
+        
+        # Skip machine accounts (account names containing $ before @ or ending with $)
+        if ($accountName -match '\$@' -or $accountName.EndsWith('$')) {
+            continue
+        }
+        
+        # Skip machine account services
+        if ($serviceName.EndsWith('$')) {
+            continue
+        }
+        
+        # Check if this user has any TGT requests from this host
+        if ($userTgtHosts.ContainsKey($accountName)) {
+            if ($clientAddress -notin $userTgtHosts[$accountName]) {
+                # TGS request from a host where user never requested TGT = Pass-the-Ticket!
+                $expectedHosts = $userTgtHosts[$accountName] -join ", "
+                
+                $findings += New-Finding -Category "Pass-the-Ticket" -Severity "CRITICAL" `
+                    -Time (Get-EventTimeUTC $event) -Description "TGS request without TGT from this host (Pass-the-Ticket)" `
+                    -EventID "4769" -Source "Security" `
+                    -Details "User: $accountName | Service: $serviceName | Request from: $clientAddress | TGT was obtained from: $expectedHosts" `
+                    -RawLog $event.Message
+                
+                Write-Host "  [!] CRITICAL: Pass-the-Ticket detected! $accountName requested $serviceName from $clientAddress but TGT was from $expectedHosts" -ForegroundColor Red
+                $pttFound = $true
+            }
+        } else {
+            # User has TGS requests but NO TGT requests at all in our timeframe
+            # This could indicate the TGT was passed from another machine
             $findings += New-Finding -Category "Pass-the-Ticket" -Severity "HIGH" `
-                -Time (Get-EventTimeUTC $sampleEvent) -Description "User authenticated from multiple IPs" `
-                -EventID "4624" -Source "Security" `
-                -Details "User: $userName" `
-                -RawLog $sampleEvent.Message
+                -Time (Get-EventTimeUTC $event) -Description "TGS request with no corresponding TGT request (possible Pass-the-Ticket)" `
+                -EventID "4769" -Source "Security" `
+                -Details "User: $accountName | Service: $serviceName | Client: $clientAddress | No TGT request found for this user" `
+                -RawLog $event.Message
             
-            Write-Host "  [!] HIGH: Pass-the-Ticket suspected for $userName (multiple IPs)" -ForegroundColor Red
+            Write-Host "  [!] HIGH: Possible Pass-the-Ticket - $accountName has TGS but no TGT request from $clientAddress" -ForegroundColor Red
             $pttFound = $true
         }
     }
@@ -1554,45 +1629,282 @@ try {
     Write-Host "  [-] Error checking Pass-the-Ticket: $($_.Exception.Message)" -ForegroundColor Gray
 }
 
-# ============================================
-# RDP TO DC DETECTION (BONUS)
-# ============================================
-
-Write-Host "`n[BONUS] Detecting RDP to Domain Controller..." -ForegroundColor Yellow
+Write-Host "`n[33/35] Detecting Kerberos ticket reuse from multiple IPs..." -ForegroundColor Yellow
 
 try {
-    # Event 4624 Logon Type 10 = RemoteInteractive (RDP)
-    $rdpEvents = Get-WinEvent -FilterHashtable @{
+    $ticketReuseFound = $false
+    
+    # Event 4624 Type 3 (Network Logon) with Kerberos - same user from multiple IPs in short time
+    # This can indicate ticket being used from multiple locations
+    $kerberosLogons = Get-WinEvent -FilterHashtable @{
         LogName = 'Security'
         ID = 4624
         StartTime = $startTime
-    } -MaxEvents 500 -ErrorAction SilentlyContinue | Where-Object {
+    } -MaxEvents 1000 -ErrorAction SilentlyContinue | Where-Object {
+        $_.Message -match "Logon Type:\s*3" -and $_.Message -match "Authentication Package:\s*Kerberos"
+    }
+    
+    # Group by user and collect IPs
+    $userLogonIPs = @{}
+    foreach ($event in $kerberosLogons) {
+        $msg = $event.Message
+        
+        # Get the Account Name from "New Logon" section
+        $accountName = "Unknown"
+        if ($msg -match "New Logon:[\s\S]*?Account Name:\s*(\S+)") {
+            $accountName = $matches[1].Trim()
+        }
+        $sourceIP = if ($msg -match "Source Network Address:\s*(\d+\.\d+\.\d+\.\d+)") { $matches[1] } else { "" }
+        
+        # Skip machine accounts and local/empty IPs
+        if ($accountName.EndsWith('$') -or $accountName -match '\$@' -or -not $accountName -or -not $sourceIP -or $sourceIP -match "^127\.|^-$") {
+            continue
+        }
+        
+        if (-not $userLogonIPs.ContainsKey($accountName)) {
+            $userLogonIPs[$accountName] = @{ IPs = @(); FirstEvent = $event }
+        }
+        if ($sourceIP -notin $userLogonIPs[$accountName].IPs) {
+            $userLogonIPs[$accountName].IPs += $sourceIP
+        }
+    }
+    
+    # Alert if user logged in from 3+ different IPs (likely ticket reuse)
+    foreach ($user in $userLogonIPs.Keys) {
+        if ($userLogonIPs[$user].IPs.Count -ge 3) {
+            $ipList = $userLogonIPs[$user].IPs -join ", "
+            $sampleEvent = $userLogonIPs[$user].FirstEvent
+            
+            $findings += New-Finding -Category "Kerberos Ticket Reuse" -Severity "HIGH" `
+                -Time (Get-EventTimeUTC $sampleEvent) -Description "Kerberos ticket used from multiple IPs (possible ticket theft/reuse)" `
+                -EventID "4624" -Source "Security" `
+                -Details "User: $user | IPs: $ipList | Count: $($userLogonIPs[$user].IPs.Count)" `
+                -RawLog $sampleEvent.Message
+            
+            Write-Host "  [!] HIGH: $user authenticated via Kerberos from $($userLogonIPs[$user].IPs.Count) different IPs: $ipList" -ForegroundColor Red
+            $ticketReuseFound = $true
+        }
+    }
+    
+    if (-not $ticketReuseFound) {
+        Write-Host "  [-] No Kerberos ticket reuse events" -ForegroundColor Gray
+    }
+} catch {
+    Write-Host "  [-] Error checking Kerberos ticket reuse: $($_.Exception.Message)" -ForegroundColor Gray
+}
+
+# ============================================
+# RDP CONNECTION DETECTION
+# ============================================
+
+Write-Host "`n[34/35] Detecting RDP Connections..." -ForegroundColor Yellow
+
+try {
+    $rdpFound = $false
+    
+    # Event 4624 Logon Type 10 = RemoteInteractive (RDP)
+    $allLogonEvents = Get-WinEvent -FilterHashtable @{
+        LogName = 'Security'
+        ID = 4624
+        StartTime = $startTime
+    } -MaxEvents 500 -ErrorAction SilentlyContinue
+    
+    $rdpEvents = $allLogonEvents | Where-Object {
         $_.Message -match "Logon Type:\s*10"
     }
     
     foreach ($event in $rdpEvents) {
         $msg = $event.Message
-        $targetUser = if ($msg -match "Account Name:\s*(\S+)") { $matches[1] } else { "Unknown" }
+        
+        # 4624 has two Account Name fields:
+        # 1. Subject: Account Name (the system/service initiating)
+        # 2. New Logon: Account Name (the actual user logging in)
+        # We need the second one - under "New Logon" section
+        $targetUser = "Unknown"
+        if ($msg -match "New Logon:[\s\S]*?Account Name:\s*(\S+)") {
+            $targetUser = $matches[1].Trim()
+        }
+        
         $sourceIP = if ($msg -match "Source Network Address:\s*(\S+)") { $matches[1] } else { "Unknown" }
         $workstation = if ($msg -match "Workstation Name:\s*(\S+)") { $matches[1] } else { "Unknown" }
         
         # Skip machine accounts
-        if ($targetUser -match "\$$") { continue }
+        if ($targetUser.EndsWith('$') -or $targetUser -match '\$@') {
+            continue
+        }
         
-        $findings += New-Finding -Category "RDP Session" -Severity "MEDIUM" `
+        $findings += New-Finding -Category "RDP Connection" -Severity "MEDIUM" `
             -Time (Get-EventTimeUTC $event) -Description "RDP logon detected" `
             -EventID "4624" -Source "Security" `
             -Details "User: $targetUser | Source: $sourceIP | Workstation: $workstation" `
             -RawLog $event.Message
         
-        Write-Host "  [!] MEDIUM: RDP session by $targetUser from $sourceIP" -ForegroundColor Yellow
+        Write-Host "  [!] MEDIUM: RDP connection by $targetUser from $sourceIP" -ForegroundColor Yellow
+        $rdpFound = $true
     }
     
-    if (-not $rdpEvents -or $rdpEvents.Count -eq 0) {
+    if (-not $rdpFound) {
         Write-Host "  [-] No RDP events" -ForegroundColor Gray
     }
 } catch {
     Write-Host "  [-] Error checking RDP: $($_.Exception.Message)" -ForegroundColor Gray
+}
+
+# ============================================
+# SMB ACCESS TO EXTERNAL HOSTS DETECTION
+# ============================================
+
+Write-Host "`n[35/35] Detecting SMB access to external hosts..." -ForegroundColor Yellow
+
+try {
+    $smbFound = $false
+    
+    # Method 1: Sysmon Event 3 - Network connections to port 445 (SMB)
+    Write-Host "  [DEBUG] Checking Sysmon Event 3 (Network Connections)..." -ForegroundColor Magenta
+    $smbConnEvents = Get-WinEvent -FilterHashtable @{
+        LogName = 'Microsoft-Windows-Sysmon/Operational'
+        ID = 3
+        StartTime = $startTime
+    } -MaxEvents 1000 -ErrorAction SilentlyContinue
+    
+    Write-Host "  [DEBUG] Found $($smbConnEvents.Count) total Sysmon Event 3" -ForegroundColor Magenta
+    
+    $smb445Events = $smbConnEvents | Where-Object {
+        $_.Message -match "DestinationPort:\s*445"
+    }
+    
+    Write-Host "  [DEBUG] Found $($smb445Events.Count) connections to port 445" -ForegroundColor Magenta
+    
+    foreach ($event in $smb445Events) {
+        $msg = $event.Message
+        $destIP = if ($msg -match "DestinationIp:\s*(\S+)") { $matches[1] } else { "" }
+        $destHost = if ($msg -match "DestinationHostname:\s*(\S+)") { $matches[1] } else { "" }
+        $sourceProcess = if ($msg -match "Image:\s*(.+?)[\r\n]") { $matches[1].Trim() } else { "Unknown" }
+        $user = if ($msg -match "User:\s*(.+?)[\r\n]") { $matches[1].Trim() } else { "Unknown" }
+        
+        Write-Host "  [DEBUG] SMB Conn - DestIP: '$destIP' | DestHost: '$destHost' | Process: '$sourceProcess' | User: '$user'" -ForegroundColor DarkMagenta
+        
+        # Skip local/loopback connections
+        if ($destIP -match "^127\.|^::1$|^0\.0\.0\.0$|^localhost$") {
+            Write-Host "  [DEBUG] SKIPPED - loopback/local IP" -ForegroundColor DarkGray
+            continue
+        }
+        
+        # Skip if no destination IP
+        if (-not $destIP) {
+            Write-Host "  [DEBUG] SKIPPED - no destination IP" -ForegroundColor DarkGray
+            continue
+        }
+        
+        $destDisplay = if ($destHost -and $destHost -ne "-") { "$destHost ($destIP)" } else { $destIP }
+        
+        $findings += New-Finding -Category "SMB Connection" -Severity "LOW" `
+            -Time (Get-EventTimeUTC $event) -Description "SMB outbound connection detected" `
+            -EventID "3" -Source "Sysmon" `
+            -Details "User: $user | Destination: $destDisplay | Process: $sourceProcess" `
+            -RawLog $event.Message
+        
+        Write-Host "  [*] LOW: SMB connection to $destDisplay by $user via $sourceProcess" -ForegroundColor Gray
+        $smbFound = $true
+    }
+    
+    # Method 2: Sysmon Event 1 - Commands with UNC paths
+    Write-Host "  [DEBUG] Checking Sysmon Event 1 (UNC paths in commands)..." -ForegroundColor Magenta
+    $allCmdEvents = Get-WinEvent -FilterHashtable @{
+        LogName = 'Microsoft-Windows-Sysmon/Operational'
+        ID = 1
+        StartTime = $startTime
+    } -MaxEvents 1000 -ErrorAction SilentlyContinue
+    
+    Write-Host "  [DEBUG] Found $($allCmdEvents.Count) total Sysmon Event 1" -ForegroundColor Magenta
+    
+    $uncCmdEvents = $allCmdEvents | Where-Object {
+        $_.Message -match "CommandLine:.*\\\\" -and $_.Message -notmatch [regex]::Escape($scriptName)
+    }
+    
+    Write-Host "  [DEBUG] Found $($uncCmdEvents.Count) events with UNC paths (\\\\)" -ForegroundColor Magenta
+    
+    foreach ($event in $uncCmdEvents) {
+        $msg = $event.Message
+        $cmdLine = if ($msg -match "CommandLine:\s*(.+?)[\r\n]") { $matches[1].Trim() } else { "" }
+        $user = if ($msg -match "User:\s*(.+?)[\r\n]") { $matches[1].Trim() } else { "Unknown" }
+        $image = if ($msg -match "Image:\s*(.+?)[\r\n]") { $matches[1].Trim() } else { "Unknown" }
+        
+        Write-Host "  [DEBUG] UNC Cmd - User: '$user' | Image: '$image' | CmdLine: '$cmdLine'" -ForegroundColor DarkMagenta
+        
+        # Extract the UNC path target
+        $uncTarget = if ($cmdLine -match "\\\\([^\\\s]+)") { $matches[1] } else { "Unknown" }
+        
+        $findings += New-Finding -Category "SMB Connection" -Severity "MEDIUM" `
+            -Time (Get-EventTimeUTC $event) -Description "UNC path access in command line" `
+            -EventID "1" -Source "Sysmon" `
+            -Details "User: $user | Target: \\$uncTarget | Command: $cmdLine" `
+            -RawLog $event.Message
+        
+        Write-Host "  [!] MEDIUM: UNC path access to \\$uncTarget by $user" -ForegroundColor Yellow
+        $smbFound = $true
+    }
+    
+    # Method 3: Security Event 5140 - Network share access
+    Write-Host "  [DEBUG] Checking Security Event 5140 (Share Access)..." -ForegroundColor Magenta
+    $allShareEvents = Get-WinEvent -FilterHashtable @{
+        LogName = 'Security'
+        ID = 5140
+        StartTime = $startTime
+    } -MaxEvents 500 -ErrorAction SilentlyContinue
+    
+    Write-Host "  [DEBUG] Found $($allShareEvents.Count) total Security Event 5140" -ForegroundColor Magenta
+    
+    foreach ($event in $allShareEvents) {
+        $msg = $event.Message
+        $shareName = if ($msg -match "Share Name:\s*(\S+)") { $matches[1] } else { "Unknown" }
+        $sourceIP = if ($msg -match "Source Address:\s*(\S+)") { $matches[1] } else { "Unknown" }
+        $accountName = if ($msg -match "Account Name:\s*(\S+)") { $matches[1] } else { "Unknown" }
+        
+        Write-Host "  [DEBUG] Share Access - Share: '$shareName' | Account: '$accountName' | SourceIP: '$sourceIP'" -ForegroundColor DarkMagenta
+        
+        # Skip machine accounts (ending with $)
+        if ($accountName.EndsWith('$') -or $accountName -match '\$@') {
+            Write-Host "  [DEBUG] SKIPPED - machine account: $accountName" -ForegroundColor DarkGray
+            continue
+        }
+        
+        # Skip local access
+        if ($sourceIP -match "^127\.|^::1$|^-$") {
+            Write-Host "  [DEBUG] SKIPPED - local access" -ForegroundColor DarkGray
+            continue
+        }
+        
+        # Determine severity based on share type (admin shares are higher severity)
+        $severity = "MEDIUM"
+        $shareType = "Network share"
+        if ($shareName -match "C\$|D\$|E\$|ADMIN\$") {
+            $severity = "HIGH"
+            $shareType = "Admin share"
+        } elseif ($shareName -match "IPC\$") {
+            $severity = "MEDIUM"
+            $shareType = "IPC$ share (recon/psexec)"
+        }
+        
+        $findings += New-Finding -Category "SMB Share Access" -Severity $severity `
+            -Time (Get-EventTimeUTC $event) -Description "$shareType access detected" `
+            -EventID "5140" -Source "Security" `
+            -Details "User: $accountName | Share: $shareName | Source: $sourceIP" `
+            -RawLog $event.Message
+        
+        if ($severity -eq "HIGH") {
+            Write-Host "  [!] HIGH: Admin share access $shareName by $accountName from $sourceIP" -ForegroundColor Red
+        } else {
+            Write-Host "  [!] MEDIUM: $shareType access $shareName by $accountName from $sourceIP" -ForegroundColor Yellow
+        }
+        $smbFound = $true
+    }
+    
+    if (-not $smbFound) {
+        Write-Host "  [-] No SMB access events" -ForegroundColor Gray
+    }
+} catch {
+    Write-Host "  [-] Error checking SMB access: $($_.Exception.Message)" -ForegroundColor Gray
 }
 
 # Generate Summary
