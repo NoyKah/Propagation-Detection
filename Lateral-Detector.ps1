@@ -4,7 +4,7 @@
 
 param(
     [int]$HoursBack = 24,
-    [string]$OutputPath = "C:\Complete_Investigation.html"
+    [string]$OutputPath = "C:\LateralMovement_Report.html"
 )
 
 Write-Host "[*] Starting Complete Threat Investigation..." -ForegroundColor Cyan
