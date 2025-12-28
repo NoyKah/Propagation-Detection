@@ -3040,9 +3040,8 @@ if ($findings.Count -gt 0) {
             Source, 
             Details,
             @{Name='RawLog';Expression={ 
-                # Escape the raw log properly for JSON
-                $escaped = $_.RawLog -replace '\\', '\\' -replace '"', '\"' -replace "`r", '\r' -replace "`n", '\n' -replace "`t", '\t'
-                "{`"EventLog`":`"$escaped`"}"
+                # Convert to proper JSON using ConvertTo-Json
+                @{ EventLog = $_.RawLog } | ConvertTo-Json -Compress
             }} | Export-Csv -Path $csvPath -NoTypeInformation -Force -Encoding UTF8
         Write-Host "[+] CSV Report saved to: $csvPath" -ForegroundColor Green
     } catch {
